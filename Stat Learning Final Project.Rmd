@@ -1,0 +1,616 @@
+---
+title: "Stat Learning Final Project"
+author: "Madison Yonash"
+date: "2023-04-04"
+output: html_notebook
+---
+
+
+# Introduction
+
+Airline fares are a major part of trips that individuals and families planning travel and vacation must consider. Companies that offer flights must consider the pricing of these fares in order to maximize the amount of customers who book, while not losing out on profits if other airlines have a more desirable deal. 
+This project explores a data set containing observations for different flight routes, with variables such as the distance of the flight, information on the starting and ending cities, and the number of passengers on the route. This data set comes from the late 1990s, a time during which there were new low-fare carriers like Southwest arising and air travel becoming more widespread and used.
+The primary aim of this project is to create a model to predict `FARE`. Different supervised learning technqieus will be tested to examine their ability to create a model that can predict route fare based on unseen observations. Techniques for regression performed include linear, logistic, ridge, lasso, random forest, and support vector machine. In order to create more robust models, 5-fold cross validation is performed for each model to prevent overfitting. Additionally, for linear and logistic regression, best subset selection is performed before fitting the model in order to reduce the number of predictors. Best subset selection and cross validation aim to prevent overfitting to the training data and perform better on the unseen test data.
+The second part of the project aims to create a model that can estimate fare based on the information that is available to airlines before a route exists. For example, we would not have the number of passengers that take a route before the route is available. This model aims to provide a means for airlines to estimate what fare to charge before actually offering that route.
+
+# Exploratory Data Analysis
+
+In EDA, we are aiming to explore relationships and information that can prove useful for our modeling. This allows us to better understand the data that we are analyzing and what influences the dependent variable. 
+```{r, warning = FALSE}
+# Load necessary packages
+library(tidyverse)
+library(randomForest)
+library(caret)
+library(modelr)
+library(hydroGOF)
+library(corrplot)
+library(MASS)
+```
+
+## Data Wrangling
+
+Preliminary data wrangling to make the data easier to work with.
+```{r}
+# Download the dataset from Github
+airfaresfull <- read.csv("https://raw.githubusercontent.com/reisanar/datasets/master/Airfares.csv")
+airfaresfull
+```
+
+For the purpose of my examining the data, I combined `S_CODE` and `S_CITY`, and `E_CODE` and `E_CITY`. These variables represent the starting and ending airport code and city. If only one airport was used in the city, the code displays an asterisk for the observation. Because of this, many observations show an asterisk for the airport code, so I chose to combine these so that we have the full location for each starting and ending city/airport.
+```{r}
+# Combine code and city
+airfaresfull <- airfaresfull %>% 
+  unite('S_CODE_CITY', S_CODE:S_CITY, sep = ", ")
+airfaresfull <- airfaresfull %>% 
+  unite('E_CODE_CITY', E_CODE:E_CITY, sep = ", ")
+```
+
+We have many categorical variables that we may use as predictors in our models. In order to use these and avoid issues of multicolinearity (and to avoid the process of creating dummy variables), we change them to factors as R can handle this. 
+```{r}
+# Make categorical variables into factor so we can use them in our analysis
+airfaresfull$S_CODE_CITY = as.factor(airfaresfull$S_CODE_CITY)
+airfaresfull$E_CODE_CITY = as.factor(airfaresfull$E_CODE_CITY)
+airfaresfull$VACATION = as.factor(airfaresfull$VACATION)
+airfaresfull$SW = as.factor(airfaresfull$SW)
+airfaresfull$SLOT = as.factor(airfaresfull$SLOT)
+airfaresfull$GATE = as.factor(airfaresfull$GATE)
+```
+
+Generate summary statistics for the data set:
+```{r}
+# Create summary statistics 
+summary(airfaresfull)
+
+# Take a glimpse at different entries for the different fields
+glimpse(airfaresfull)
+```
+
+## Visualizations
+
+Creating visualizations for our data set gives us a better understanding of the data that we wish to predict, and the relationships and behaviors that it exhibits.
+
+### Fare
+
+Examining the variable we wish to predict, we develop a histogram and boxplot to view the distribution.
+```{r}
+# Histogram
+airfaresfull %>% 
+  ggplot() +
+  geom_histogram(mapping = aes(FARE)) +
+  labs(title = "Distribution of Fare", x = "Fare", y = "Count") +
+  theme_minimal()
+```
+
+```{r}
+# Boxplot
+airfaresfull %>% 
+  ggplot() +
+  aes(x = "", y = FARE) +
+  geom_boxplot() +
+  labs(title = "Boxplot for Fare") +
+  theme_minimal()
+```
+
+The summary statistics for `FARE` are as follows:
+```{r}
+summary(airfaresfull$FARE)
+```
+
+### Starting and Ending Cities
+
+Some airports were frequently routed, while others only had a few routes that started or ended at that location. Ultimately, due to issues of multicolinearity and per suggestion of the rubric, we choose not to use these as predictors in our models. Additionally, if we are attempting to predict fare of a new city or airport, this leads to issues with having preexisting cities and airports as predictors of fare. However, it can be interesting to visualize the distribution of these airports, so I am doing that here despite not using them as predictors. 
+```{r}
+# Count number of routes starting at each airport, city
+s_city_count <- airfaresfull %>% 
+  group_by(S_CODE_CITY) %>% 
+  count()
+
+# Select top 10 most frequent starting cities
+s_city_top <- s_city_count %>% 
+  arrange(desc(n)) %>% 
+  head(10)
+
+# Utilize ggplot to visualize this in a bar chart
+s_city_top %>% 
+  ggplot() +
+  geom_col(mapping = aes(x = fct_reorder(S_CODE_CITY, n), 
+                         y = n)) +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Most Frequently Routed Starting Airports",
+       x = "Airport, City",
+       y = "Number of Routes")
+
+```
+
+```{r}
+# Count number of routes ending at each airport, city
+e_city_count <- airfaresfull %>% 
+  group_by(E_CODE_CITY) %>% 
+  count()
+
+# Select top 10 most frequent ending cities
+e_city_top <- e_city_count %>% 
+  arrange(desc(n)) %>% 
+  head(10)
+
+# Utilize ggplot to visualize this in a bar chart
+e_city_top %>% 
+  ggplot() +
+  geom_col(mapping = aes(x = fct_reorder(E_CODE_CITY, n), 
+                         y = n)) +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Most Frequently Routed Ending Airports",
+       x = "Airport, City",
+       y = "Number of Routes")
+```
+
+### Correlation Plot
+
+With a correlation plot, we are able to examine the relationships between variables. If we want to see which variables are most influential on `FARE`, this can be a useful tool as it creates a visual representation of the correlation matrix between numerical variables.
+```{r}
+# Separate dataset by categorical and numeric variables
+airfares.num <- airfaresfull[,c(3,4,7:11,14:16)]
+airfares.cat <- airfaresfull[,c(1,2,5,6,12,13)]
+
+# Create correlation matrix and plot
+airfares.cor <- cor(airfares.num)
+corrplot(airfares.cor)
+```
+
+From this chart, the **single best predictor of fare seems to be distance.**
+We also see some correlation between coupon and distance. Coupon is a variable that represents the average number of stops for that flight, and distance is the distance between the starting and ending airport for the route. If we think of this in context of the data set, this makes sense as we can assume that increasing the distance of a route means that more stops may be needed to fuel up, make connecting flights, etc. However, coupon may have a different effect on `FARE` than distance. For example, one-way flights, a coupon of 1, may be a higher price than a route that has a similar distance but more stops. 
+
+We can examine scatterplots demonstrating the relationship between fare and other variables:
+```{r}
+# Scatterplot of Distance v Fare
+airfaresfull %>% 
+  ggplot() +
+  geom_point() +
+  aes(x=DISTANCE, y=FARE) +
+  labs(title = "Distance vs Fare",
+       x = "Distance",
+       y = "Fare") +
+  theme_minimal()
+```
+
+```{r}
+# Scatterplot of Coupon v Fare
+airfaresfull %>% 
+  ggplot() +
+  geom_point() +
+  aes(x=COUPON, y=FARE) +
+  labs(title = "Coupon vs Fare",
+       x = "Coupon",
+       y = "Fare") +
+  theme_minimal()
+```
+
+### Categorical Predictors
+
+Here we explore the categorical predictors within the data set. For each variable, we examine the percentage of routes that are in each category, as well as the average fare for each category.
+
+### Vacation Route
+
+```{r}
+VACAY_Y <- airfares.cat %>% 
+    summarize(mean(VACATION == "Yes"))
+VACAY_N <- airfares.cat %>% 
+    summarize(mean(VACATION == "No"))
+paste("Percentage of VACATION = YES:", VACAY_Y)
+paste("Percentage of VACATION = NO:", VACAY_N)
+```
+
+```{r}
+airfaresfull %>% 
+  group_by(VACATION) %>% 
+  summarize(avg_fare = mean(FARE)) %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(VACATION, +avg_fare),
+           y = avg_fare)) +
+  labs(title = "Average Fare if Flight is a Vacation Route", x = "Vacation Route", y = "Average Fare") +
+  theme_minimal() 
+```
+
+### Southwest Route
+
+```{r}
+SW_Y <- airfares.cat %>% 
+    summarize(mean(SW == "Yes"))
+SW_N <- airfares.cat %>% 
+    summarize(mean(SW == "No"))
+paste("Percentage of SOUTHWEST = YES:", SW_Y)
+paste("Percentage of SOUTHWEST = NO:", SW_N)
+```
+
+```{r}
+airfaresfull %>% 
+  group_by(SW) %>% 
+  summarize(avg_fare = mean(FARE)) %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(SW, +avg_fare),
+           y = avg_fare)) +
+  labs(title = "Average Fare if Southwest Serves a Route", x = "SW Service", y = "Average Fare") +
+  theme_minimal() 
+```
+
+### Slot Control
+
+```{r}
+SLOT_Y <- airfares.cat %>% 
+    summarize(mean(SLOT == "Free"))
+SLOT_N <- airfares.cat %>% 
+    summarize(mean(SLOT == "Controlled"))
+paste("Percentage of SLOT = Free:", SLOT_Y)
+paste("Percentage of SLOT = Controlled:", SLOT_N)
+```
+
+```{r}
+airfaresfull %>% 
+  group_by(SLOT) %>% 
+  summarize(avg_fare = mean(FARE)) %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(SLOT, +avg_fare),
+           y = avg_fare)) +
+  labs(title = "Average Fare Based on Slot Control", x = "Slot Control", y = "Average Fare") +
+  theme_minimal()
+```
+
+### Gate Control
+
+```{r}
+GATE_Y <- airfares.cat %>% 
+    summarize(mean(GATE == "Free"))
+GATE_N <- airfares.cat %>% 
+    summarize(mean(GATE == "Constrained"))
+paste("Percentage of GATE = Free:", GATE_Y)
+paste("Percentage of GATE = Constrained:", GATE_N)
+```
+
+```{r}
+airfaresfull %>% 
+  group_by(GATE) %>% 
+  summarize(avg_fare = mean(FARE)) %>% 
+  ggplot() +
+  geom_col(aes(x = reorder(GATE, avg_fare),
+           y = avg_fare)) +
+  labs(title = "Average Fare Based on Gate Control", x = "Gate Control", y = "Average Fare") +
+  theme_minimal()
+```
+
+We see that the average fare is higher when it is not a vacation route, when Southwest does not serve the route, when the slot is controlled, and when the gate is constrained.
+
+# Modeling Fare
+
+To predict fare, we create different types of regression models. The models explored include linear, logistic, ridge, lasso, random forest, and support vector machine. To evaluate the performance of the models, we can look at the $R^2$ of the training data as well as the root mean squared error for the training and test data. This lets us compare our models' ability to predict on both the data for training and unseen data (test data). Additionally, 5 fold cross validation is performed for each model in order to create a better model and evaluate the performance of the model. The in-sample RMSE is produced by averaging the RMSE of each fold within the training data. 
+
+## Splitting data
+
+As aforementioned, the project ideas suggested omitting the variables of starting and ending  code and city. Some cities have as few as one route listed as starting or ending there, so using this variable may lead to overfitting and incorrect assumptions about how these cities affect fare. We do have some data about the starting and ending cities, which does allow them to play some role in our estimation of fare.
+I initially tried to use these as predictors, but ran into issues of multicolinearity.. This being said, an interesting expansion of this project would be to examine these starting and ending cities and codes as predictors. This could provide insight into how the location affects the fare, rather than just using the income of the cities.
+
+```{r}
+# Set seed for reproducibility
+set.seed(100)
+
+# Remove columns containing starting and ending city and code
+airfares <- airfaresfull[,c(3:16)]
+
+# Create index for split
+train_idx <- sample(1:nrow(airfares), .8 * nrow(airfares))
+
+# Split data into testing and training sets
+train_data <- airfares[train_idx, ]
+test_data <- airfares[-train_idx, ]
+``` 
+
+```{r}
+# Create variable for cross-validation. We will be performing 5-fold cv
+train.control <- trainControl(method = "cv", number = 5)
+
+```
+
+## Linear Regression
+
+multiple linear regression
+
+```{r}
+# Train the model and perform best subset selection
+
+lm_fullModel <- lm(FARE ~., data = train_data)
+lm_finalModel <- step(lm_fullModel, direction = "both")
+lm_finalModel
+```
+
+```{r}
+# Cross-validate the final model using 5-fold cross-validation
+lm_modelCV <- train(FARE ~ VACATION + SW + HI + S_INCOME + E_INCOME + 
+    S_POP + E_POP + SLOT + GATE + DISTANCE + PAX, data = train_data, method = "lm",
+                 trControl = train.control)
+
+# Summarize results of folds
+lm_modelCV$resample
+```
+
+```{r}
+# Test model on unseen data
+lm_predict <- predict(lm_finalModel, test_data)
+lm_RMSE <- rmse(lm_predict, test_data$FARE)
+lm_RMSE 
+```
+
+```{r}
+# Plot predicted versus actual values 
+plot(x=lm_predict, y= test_data$FARE,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0, b=1)
+```
+
+## Logistic Regression
+
+```{r}
+# Train the model and perform best subset selection
+glm_fullModel <- glm(FARE ~., data = train_data)
+glm_finalModel <- step(glm_fullModel, direction = "both")
+
+#Display final model
+glm_finalModel
+```
+
+```{r}
+# Cross-validate the final model using 5-fold cross-validation
+glm_modelCV <- train(FARE ~ VACATION + SW + HI + S_INCOME + E_INCOME + 
+    S_POP + E_POP + SLOT + GATE + DISTANCE + PAX, data = train_data, method = "glm",
+                 trControl = train.control)
+
+# Summarize results of folds
+glm_modelCV$resample
+```
+
+```{r}
+# Test model on unseen data
+glm_predict <- predict(glm_finalModel, test_data)
+glm_RMSE <- rmse(glm_predict, test_data$FARE)
+glm_RMSE 
+```
+
+```{r}
+# Plot predicted versus actual values 
+plot(x=glm_predict, y= test_data$FARE,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0, b=1)
+```
+
+## Ridge Regression
+
+```{r}
+# Train the model
+ridge_model <- train(FARE ~., data = train_data, method = "ridge",
+               trControl = train.control)
+# Summarize the results
+print(ridge_model)
+```
+
+```{r}
+# Display final model
+ridge_model$finalModel
+```
+
+```{r}
+# Summarize results of folds
+ridge_model$resample
+```
+
+```{r}
+plot(ridge_model$finalModel)
+```
+
+```{r}
+# Test model on unseen data
+ridge_predict <- predict(ridge_model, test_data)
+ridge_RMSE <- rmse(ridge_predict, test_data$FARE)
+ridge_RMSE 
+```
+
+```{r}
+# Plot predicted versus actual values 
+plot(x=ridge_predict, y= test_data$FARE,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0, b=1)
+```
+
+## Lasso Regression
+
+```{r}
+# Train the model
+lasso_model <- train(FARE ~., data = train_data, method = "lasso",
+               trControl = train.control)
+# Summarize the results
+print(lasso_model)
+```
+
+```{r}
+# Display final model
+lasso_model$finalModel
+```
+
+```{r}
+# Summarize results of folds
+lasso_model$resample
+```
+
+```{r}
+plot(lasso_model$finalModel)
+```
+
+```{r}
+# Test model on unseen data
+lasso_predict <- predict(lasso_model, test_data)
+lasso_RMSE <- rmse(lasso_predict, test_data$FARE)
+lasso_RMSE 
+```
+
+```{r}
+# Plot predicted versus actual values 
+plot(x=lasso_predict, y= test_data$FARE,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0, b=1)
+```
+
+## Random Forest
+
+```{r}
+# Train the model
+rf_model <- train(FARE ~., data = train_data, method = "rf",
+               trControl = train.control)
+# Summarize the results
+print(rf_model)
+```
+
+```{r}
+# Display final model
+rf_model$finalModel
+```
+
+```{r}
+# Summarize results of folds
+rf_model$resample
+```
+
+```{r}
+# Display variable importance plot
+varImpPlot(rf_model$finalModel)
+```
+
+```{r}
+# Test model on unseen data
+rf_predict <- predict(rf_model, test_data)
+rf_RMSE <- rmse(rf_predict, test_data$FARE)
+rf_RMSE 
+```
+
+```{r}
+# Plot predicted versus actual values 
+plot(x=rf_predict, y= test_data$FARE,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0, b=1)
+```
+
+## Support Vector Regression
+
+```{r}
+# Train the model
+svm_model <- train(FARE ~., data = train_data, method = "svmLinear",
+               trControl = train.control)
+# Summarize the results
+print(svm_model)
+```
+
+```{r}
+# Display final model
+svm_model$finalModel
+```
+
+```{r}
+# Summarize results of folds
+svm_model$resample
+```
+
+```{r}
+# Test model on unseen data
+svm_predict <- predict(svm_model, test_data)
+svm_RMSE <- rmse(svm_predict, test_data$FARE)
+svm_RMSE 
+```
+
+```{r}
+# Plot predicted versus actual values 
+plot(x=svm_predict, y= test_data$FARE,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0, b=1)
+```
+
+# Modeling Fare for New Routes
+We will not have predictors such as number of people on the route when we want to predict fare for a new route. We can create a model without these predictors as a way for an airline to set the fare of a route before it is created. As random forest had the lowest OOS RMSE in creating a full model to predict fare, we will use this to create our model.
+
+```{r}
+# Train the model
+rf_model2 <- train(FARE ~ COUPON + VACATION + SW + S_INCOME + E_INCOME + S_POP + E_POP + SLOT + GATE + DISTANCE, data = train_data, method = "rf",
+               trControl = train.control)
+# Summarize the results
+print(rf_model2)
+```
+
+```{r}
+# Display final model
+rf_model2$finalModel
+```
+
+```{r}
+# Summarize results of folds
+rf_model2$resample
+```
+
+```{r}
+# Display variable importance plot
+varImpPlot(rf_model2$finalModel)
+```
+
+```{r}
+# Test model on unseen data
+rf_predict2 <- predict(rf_model2, test_data)
+rf_RMSE2 <- rmse(rf_predict2, test_data$FARE)
+rf_RMSE2 
+```
+
+```{r}
+# Plot predicted versus actual values 
+plot(x=rf_predict2, y= test_data$FARE,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0, b=1)
+```
+
+Even without the predictors of `PAX`, `HI`, and `NEW`, we were able to create a model with an RMSE that is relatively close to that of the full model. We can contribute that to the predictors being removed not being the most influential on the dependent variable `FARE`. 
+
+# Conclusions
+
+## Comparing Models
+
+We can see a table that summarizes the result of our models created to try to predict fare:
+
+|Model |$R^2$ | In Sample RMSE | Out of Sample RMSE|
+|:-------------|:---------------|:---------|:------------|
+|Linear|0.7669|36.137|34.5521|
+|Logistic|0.7697|36.419|34.5521|
+|Ridge|0.7706|35.886|34.4968|
+|Lasso|0.7651|36.341|35.336|
+|Random Forest|0.8810|26.651|25.232|
+|SVM|0.7696|36.3103|34.612|
+
+Additionally, we can compare the random forest models for predicting fare, where one contains all predictors and the other model contains only predictors that we will have before beginning a route:
+
+|Model |$R^2$ | In Sample RMSE | Out of Sample RMSE|
+|:--------------|:--------|:--------|:--------|
+|All Predictors|0.8810|26.651|25.232|
+|Only Pre-Existing Predictors|0.8723|27.139|27.547|
+
+## Final Thoughts
+
+The different models used to predict fare had relatively similar results in their accuracy, and their ability to predict unseen data. Additionally, exploring the use of a random forest model to predict fare for a route that has not yet been created (therefore we exclude some of the predictors originally used) helps expand the applications of this project. 
+Limitations for this project were the inability to use airport/city as predictors. For example, it is known that PHX is one of the most expensive airports to route to in the United States. If a data set had more routes, including different airports for different cities and the volume of routes that go through those cities, I think that it would provide some interesting insight on how city and airport affect route fares. Having a larger data set with a wider range of airports and more routes offered at each airport would allow us to create a much more robust model than what could have been created with the current dataset. Major route hubs like ATL and DFW could also mean that there is a higher volume of flights to certain routes rather than others.
+Additionally, this set is from the 90s, and we now have many more budget airlines such as Spirit and Frontier offering low-cost alternatives. Similar to how Southwest offering flights on the route being a predictor that lowers the average fare, it could be possible that certain routes that have lots of budget airline activity have a lower fare. It would be interesting to see how route fare is different now, as air travel is increasingly more prevalent, and we also exist in a post 9/11 world. 
